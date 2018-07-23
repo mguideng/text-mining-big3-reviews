@@ -1,0 +1,491 @@
+---
+layout: post
+title: Text Mining Glassdoor Reviews
+subtitle: Case of Gaming Manufacturing in Las Vegas
+bigimg: /img/slot.jpg
+tags: [r-project, glassdoor, webscraping, text-mining, text-analytics, sentiment-analysis]
+output: 
+  html_document: 
+    keep_md: yes
+hidden: true
+---
+
+
+```{r Prelim, include=FALSE}
+########## P1. PRELIMS ##########
+library(tidytext)   #split column into tokens by unnest_token() & get sentiments using bing()
+library(tidyverse)  #includes: dplyr, ggplot2, stringr; tidyr
+library(rvest)      #scrape
+library(purrr)      #iterate scraping by map_df()
+
+library(knitr)      #report generation
+options(knitr.table.format = "html")
+library(kableExtra) #format tables
+library(installr)   #pdf output
+library(readr)      #writeLines for wrapping cat()
+```
+
+```{r RatingSummary, message=FALSE, warning=FALSE, include=FALSE}
+########## P2. RATING SUMMARY TABLE ##########
+Rate.Overall <- c("3.4", "3.2", "3.1")
+Rate.Culture <- c("3.4", "3.0", "3.0")
+Rate.WorkLifeBalance <- c("3.4", "3.1", "3.1")
+Rate.SrMgmnt <- c("2.8", "2.6", "2.6")
+Rate.Compensation <-c("3.7", "3.2", "3.1")
+Rate.CareerOppor <- c("3.2", "2.8", "2.7")
+
+Company <- c("Aristocrat", "IGT", "Scientific Games")
+
+ratingSum <- data.frame(Company, Rate.Overall, Rate.Culture,Rate.SrMgmnt, Rate.WorkLifeBalance, Rate.Compensation, Rate.CareerOppor)
+colnames(ratingSum) = c("Company", "Overall", "Culture", "Sr. Mgmt", "Work-Life Bal.", "Compensation", "Career Opp.")
+```
+
+```{r ReviewsFeedp1, message=FALSE, warning=FALSE, include=FALSE}
+########## P3 REVIEWS FEED DATAFRAME ########## 
+## a. Web scraping
+
+path.source <- ("C:/Users/Rie Guide/Google Drive/NerdyRie/IP - GitHub/Repos/text-mining-glassdoor-gmfg/source scrape glassdoor.R")
+
+company <- "Aristocrat-Technologies-Reviews-E2320"
+source(path.source, local = TRUE)$value     # calls the source script
+df.z$rev.company <- "Aristocrat"
+df.z$rev.id <- as.numeric(rownames(df.z))                       #add ID
+df.AT <- df.z
+
+company <- "IGT-Reviews-E1527"
+source(path.source, local = TRUE)$value     # calls the source script
+df.z$rev.company <- "IGT"
+df.z$rev.id <- as.numeric(rownames(df.z))                       #add ID
+df.IGT <- df.z
+
+company <- "Scientific-Games-Reviews-E1998"
+source(path.source, local = TRUE)$value     # calls the source script
+df.z$rev.company <- "Scientific Games"
+df.z$rev.id <- as.numeric(rownames(df.z))                       #add ID
+df.SG <- df.z
+
+# Combine
+df <- rbind(df.AT, df.IGT, df.SG)
+write.csv(df.AT, "tempdf.AT.csv", row.names = F)
+write.csv(df.IGT, "tempdf.IGT.csv", row.names = F)
+write.csv(df.SG, "tempdf.SG.csv", row.names = F)
+
+# Check class types and change as needed
+sapply(df, class)
+
+cols.char <- c("rev.date", "rev.sum", "rev.title", "rev.pros", "rev.cons", "rev.helpf", "rev.company")
+df[cols.char] <- sapply(df[cols.char],as.character)
+
+df$rev.id <- as.numeric(df$rev.id)
+```
+
+```{r ReviewsFeedp2, message=FALSE, warning=FALSE, include=FALSE}
+## b. Clean & add fields
+df <- subset(df, rev.date!="Featured Review")               #remove any without a date 
+
+df$rev.helpf <- as.numeric(gsub("\\D", "", df$rev.helpf))   #clean Helpf
+
+df$rev.year <- as.numeric(sub(".*, ","", df$rev.date))      #extract Year
+df <- subset(df, rev.year!="0")                             #remove any without a date 
+
+df$rev.pos <- sub(".* Employee - ", "", df$rev.title)       #extract Position
+df$rev.pos <- sub(" in .*", "", df$rev.pos)
+
+df$rev.loc <- sub(".*\\ in ", "", df$rev.title)             #extract Location
+df$rev.loc <- ifelse(df$rev.loc %in% 
+                       (grep("Former Employee|Current Employee", df$rev.loc, value = T)), 
+                     "Not Given", df$rev.loc)
+
+df$rev.stat <- str_extract(df$rev.title, ".* Employee -")   #extract Status
+df$rev.stat <- sub(" Employee -", "", df$rev.stat)
+
+df$rev.prikey <- as.numeric(rownames(df))
+```
+
+
+```{r Pros NGrams, message=FALSE, warning=FALSE, include=FALSE}
+########## P4.1 PROS N-GRAMS ##########
+## a. TIDY
+# Create df text and clean up a bit
+tidy.pros <- df[c("rev.id", "rev.pros", "rev.company")]
+tidy.pros$rev.pros <- gsub("Aristocrat|IGT|Scientific Games|sg", " ", tidy.pros$rev.pros)
+tidy.pros$rev.pros <- gsub("work life balance|Work life balance", "worklife balance", tidy.pros$rev.pros)
+
+
+# Tidy words for unigrams
+words.pros <- tidy.pros %>% unnest_tokens(word, rev.pros)             #transform text into words
+words.pros <- subset(words.pros, grepl('\\D', words.pros$word))       #omit digit words tokens
+words.pros <- words.pros %>% anti_join(stop_words, by = "word")       #remove stop words
+
+# Tidy words for bigrams
+words2.pros <- tidy.pros
+words2.pros$rev.pros <- gsub("\\d", "", words2.pros$rev.pros)         #omit words w/ any digits
+words2.pros$rev.pros <- gsub("[[:punct:]]", "", words2.pros$rev.pros)     #& punctuation
+words2.pros <- words2.pros %>%                                    #transform text into words
+  unnest_tokens(word, rev.pros, token = "ngrams", n = 2) %>% 
+  separate(word, c("item1", "item2"), sep = " ") %>% 
+  filter(!item1 %in% stop_words$word, !item2 %in% stop_words$word) %>%
+  unite(word, item1, item2, sep = " ")
+
+## b. UNIGRAMS
+unigram.prosplot <- words.pros %>%
+  group_by(rev.company) %>% 
+  count(word) %>% 
+  top_n(20) %>% 
+  arrange(word) %>% 
+  ggplot(aes(fill = rev.company, x = reorder(word, n), y = n)) + 
+  geom_col(show.legend = F) +
+  facet_wrap(~rev.company, ncol = 3)+
+  scale_fill_manual(values = c("#06357A", "#F69415", "#EC0927")) +
+  coord_flip() + scale_y_continuous(expand = c(0, 0)) + 
+  labs(title = "Pros: Single Words Frequency", x = NULL, y = "Frequency") +
+  theme_bw(base_size = 10)
+
+## c. BIGRAMS
+bigram.prosplot <- words2.pros %>%
+  group_by(rev.company) %>% 
+  count(word) %>% 
+  top_n(10) %>% 
+  arrange(word) %>% 
+  ggplot(aes(fill = rev.company, x = reorder(word, n), y = n)) + 
+  geom_col(show.legend = F) +
+  facet_wrap(~rev.company, ncol = 3)+
+  scale_fill_manual(values = c("#06357A", "#F69415", "#EC0927")) +
+  coord_flip() + scale_y_continuous(expand = c(0, 0)) + 
+  labs(title = "Pros: Pair Words Frequency", x = NULL, y = "Frequency") +
+  theme_bw(base_size = 10)
+```
+
+
+```{r Pros Sen, message=FALSE, warning=FALSE, include=FALSE}
+########## P5.2 PROS SENTIMENT ##########
+
+# First, create bing reference table of sentiments for each word
+bing <- sentiments %>%
+  filter(lexicon == "bing") %>% select(-score)
+
+## a. COMPARISON OF SENTIMENTS
+
+# Categorize sentiment
+barcompare.pros <- words.pros %>%         #count sentiments using inner join
+  inner_join(get_sentiments("bing")) %>%
+  count(rev.company, word, sentiment, sort = TRUE) %>%
+  group_by(sentiment) %>% 
+  top_n(20) %>% 
+  ungroup() %>% 
+  mutate(word = reorder(word, n)) %>%
+  ggplot(aes(word, n, fill = sentiment)) +
+  geom_col(show.legend = T) +
+  facet_wrap(~rev.company, scales = "free_y") +
+  scale_fill_manual(values = c("#254F73", "#56B1F7")) +
+  labs(title = "Pros: Sentiment Single Words Frequency", x = NULL, y = "Frequency") +
+  coord_flip() +
+  theme_bw(base_size = 10)
+```
+
+```{r Cons NGrams, message=FALSE, warning=FALSE, include=FALSE}
+########## P6.1 CONS N-GRAMS ##########
+
+## a. TIDY
+# Create df text
+tidy.cons <- df[c("rev.id", "rev.cons", "rev.company")]
+tidy.cons$rev.cons <- gsub("Aristocrat|IGT|Scientific Games", " ", tidy.cons$rev.cons)
+tidy.cons$rev.cons <- gsub("life style", "lifestyle", tidy.cons$rev.cons)
+tidy.cons$rev.cons <- gsub("work life balance|Work life balance", "worklife balance", tidy.cons$rev.cons)
+
+
+# Tidy words for unigrams
+words.cons <- tidy.cons %>% unnest_tokens(word, rev.cons)             #transform text into words
+words.cons <- subset(words.cons, grepl('\\D', words.cons$word))       #omit digit words tokens
+words.cons <- words.cons %>% anti_join(stop_words, by = "word")       #remove stop words
+
+# Tidy words for bigrams
+words2.cons <- tidy.cons
+words2.cons$rev.cons <- gsub("\\d", "", words2.cons$rev.cons)         #omit words w/ any digits
+words2.cons$rev.cons <- gsub("[[:punct:]]", "", words2.cons$rev.cons)     #& punctuation
+
+words2.cons <- words2.cons %>%                                        #transform text into words
+  unnest_tokens(word, rev.cons, token = "ngrams", n = 2) %>% 
+  separate(word, c("item1", "item2"), sep = " ") %>% 
+  filter(!item1 %in% stop_words$word, !item2 %in% stop_words$word) %>%
+  unite(word, item1, item2, sep = " ")
+words2.cons<-words2.cons[!(words2.cons$word=="management management"),]  #remove rows with "management management"
+
+## b. UNIGRAMS
+unigram.consplot <- words.cons %>%
+  group_by(rev.company) %>% 
+  count(word) %>% 
+  top_n(20) %>% 
+  arrange(word) %>% 
+  ggplot(aes(fill = rev.company, x = reorder(word, n), y = n)) + 
+  geom_col(show.legend = F) +
+  facet_wrap(~rev.company, ncol = 3)+
+  scale_fill_manual(values = c("#06357A", "#F69415", "#EC0927")) +
+  coord_flip() + scale_y_continuous(expand = c(0, 0)) + 
+  labs(title = "Cons: Single Words Frequency", x = NULL, y = "Frequency") +
+  theme_bw(base_size = 10)
+
+## c. BIGRAMS
+bigram.consplot <- words2.cons %>%
+  group_by(rev.company) %>% 
+  count(word) %>% 
+  top_n(10) %>% 
+  arrange(word) %>% 
+  ggplot(aes(fill = rev.company, x = reorder(word, n), y = n)) + 
+  geom_col(show.legend = F) +
+  facet_wrap(~rev.company, ncol = 3)+
+  scale_fill_manual(values = c("#06357A", "#F69415", "#EC0927")) +
+  coord_flip() + scale_y_continuous(expand = c(0, 0)) + 
+  labs(title = "Cons: Pair Words Frequency", x = NULL, y = "Frequency") +
+  theme_bw(base_size = 10)
+```
+
+```{r Cons Sen, message=FALSE, warning=FALSE, include=FALSE}
+########## P6.2 CONS SENTIMENT ##########
+
+# Use previously created bing reference from pros section, i.e., "bing" table
+
+## a. COMPARISON OF SENTIMENTS
+# Categorize sentiment
+barcompare.cons <- words.cons %>%         #count sentiments using inner join
+  inner_join(get_sentiments("bing")) %>%
+  count(rev.company, word, sentiment, sort = TRUE) %>%
+  group_by(sentiment) %>%
+  top_n(20) %>%
+  ungroup() %>%
+  mutate(word = reorder(word, n)) %>%
+  ggplot(aes(word, n, fill = sentiment)) +
+  geom_col(show.legend = T) +
+  facet_wrap(~rev.company, scales = "free_y") +
+  scale_fill_manual(values = c("#254F73", "#56B1F7")) +
+  labs(title = "Cons: Sentiment Single Words Frequency", x = NULL, y = "Frequency") +
+  coord_flip() +
+  theme_bw(base_size = 10)
+```
+
+```{r Pros & Cons SenScore, message=FALSE, warning=FALSE, include=FALSE}
+########## P7 SENTIMENT SCORING ##########
+
+## a. PROS SCORING
+senscore.pros <- words.pros %>%  #count sentiments using inner join and calculate score
+  inner_join(bing) %>% 
+  count(rev.id, sentiment) %>% 
+  spread(sentiment, n, fill = 0) %>% 
+  mutate(wgtdscore.pros = (positive * 1) + (negative * -1))
+senscore.pros <- senscore.pros[c("rev.id", "wgtdscore.pros")]   #keep just 2 columns
+
+df <- left_join(df, senscore.pros)    #add to df
+
+## b. CONS SCORING
+senscore.cons <- words.cons %>%  #count sentiments using inner join and calculate score
+  inner_join(bing) %>% 
+  count(rev.id, sentiment) %>% 
+  spread(sentiment, n, fill = 0) %>% 
+  mutate(wgtdscore.cons = (positive * -1) + (negative * -1)) %>%    #negate positive words
+  mutate_if(is.numeric,coalesce,0)
+senscore.cons <- senscore.cons[c("rev.id", "wgtdscore.cons")]       #keep just 2 columns
+
+df <- left_join(df, senscore.cons)    #add to df
+
+## d. NET SCORING (Summary + Pros + Cons)
+df[is.na(df)] <- 0  #replace NAs with 0
+
+df <- df %>% 
+  mutate(score = wgtdscore.pros + wgtdscore.cons)
+
+senscore.sentxt <- df[c("rev.company", "rev.id", "rev.year","score")]
+colnames(senscore.sentxt)[3]<-"Year"
+
+## e. PLOT & SUMMARY STATS
+Q1 <- quantile(df$score, .25)   #2 hline
+Q3 <- quantile(df$score, .75)   #-2 hline
+
+senscore.sentxtplot <- senscore.sentxt %>% 
+  ggplot(aes(rev.id, score, fill = Year)) +
+  geom_bar(stat = "identity", show.legend = T) +
+  facet_wrap(~rev.company, scales = "free_x", ncol = 1, shrink = T) +
+  scale_x_continuous(breaks = seq(0, max(df$rev.id), 50)) +
+  scale_y_continuous(breaks = seq(-20, 10, 5), limits=c(-20, 10)) +
+  geom_hline(aes(yintercept = Q1)) +
+  geom_hline(aes(yintercept = Q3)) +
+  theme_bw(base_size = 10) +
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank()) +
+  labs(title = "", y = "Sentiment Score", x = "by Reviewer ID (sorted by date reviewed)")
+
+# Summary stats
+ss.min <- aggregate(score~rev.company, df, min) %>% rename(Min = score)
+ss.qrtl.1 <- aggregate(score~rev.company, df, quantile, 0.25) %>% rename(Qrtl.1 = score)
+ss.med <- aggregate(score~rev.company, df, median) %>% rename(Median = score)
+ss.mean <- aggregate(score~rev.company, df, mean) %>% rename(Mean = score)
+ss.qrtl.3 <- aggregate(score~rev.company, df, quantile, 0.75) %>% rename(Qrtl.3 = score)
+ss.max <- aggregate(score~rev.company, df, max) %>% rename(Max = score)
+
+# Merge multiple dfs based on rev.company, polish up a bit
+ss <- Reduce(merge, list(ss.min, ss.qrtl.1, ss.med, ss.mean, ss.qrtl.3, ss.max)) 
+ss$Mean <- round(ss$Mean, 2) 
+colnames(ss)[1]<-"Company"
+
+# By year
+annual.score <- aggregate(score~rev.company + rev.year, df, mean)
+annual.score$score <- round(annual.score$score, digits = 2)
+colnames(annual.score) <- c("Company", "Year", "Score")
+
+senscore.sentxtplot.annual <- annual.score %>% 
+  ggplot(aes(Year, Score, color = Company)) +
+  geom_line(stat = "identity", size = 2, show.legend = T) +
+  geom_hline(aes(yintercept = 0)) +
+  scale_x_continuous(minor_breaks = seq(2008 , 2018, 1), breaks = seq(2008, 2018, 1)) +
+  scale_y_continuous(breaks = seq(-10, 5, 1), limits=c(-10, 5)) +
+  scale_color_manual(values = c("#06357A", "#F69415", "#EC0927")) +
+  theme_bw(base_size = 10) +
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank()) +
+  labs(title = "", y = "Average Sentiment Score", x = "Year")
+```
+
+
+This post summarizes company reviews on Glassdoor. It contains tables and charts to show what employees write the most about to describe their workplace experiences, and whether they tend to be expressed in a more negative, positive, or neutral way.
+
+A variety of text analytics tasks were applied on a case of top companies in the gaming manufacturing sector that have a large presence in Las Vegas. These include:
+
+* Aristocrat Technologies,
+* IGT, and
+* Scientific Games.
+ 
+Companies in this sector provide gambling products by designing, developing and manufacturing gaming displays, slot machines, card counters and shufflers, transaction systems, and related service support.
+
+To date, over 1,500 reviews total have been posted among the three companies. Each company has a different number of reviews where the amount of text analyzed is larger for IGT and smaller for Aristocrat and Scientific Games. Bar graphs are in a panel layout for all three companies to make it easier to see patterns within each individual chart and may not necessarily be comparable across charts.
+
+=======
+
+**PART 1: REVIEWER PROFILE**
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+tbl.year <- df %>% 
+  group_by(Company = rev.company, Year = rev.year) %>%
+  summarize(Freq =n()) %>% 
+  mutate(Percent = round((Freq/sum(Freq)*100), digits=1)) 
+
+kable(tbl.year[1:32, 2:4], 
+      caption = "Number of Reviews by Year") %>%
+  kable_styling(bootstrap_options = c("hover", "striped", "condensed"), font_size = 10, full_width = F) %>% 
+  column_spec(1, width = "3cm") %>% column_spec(2, width = "2cm") %>% column_spec(3, width = "2cm") %>% 
+  group_rows("Aristocrat - Total Reviews: 300", 1, 10) %>%
+  group_rows("IGT - Total Reviews: 877", 11, 21) %>%
+  group_rows("Scientific Games - Total Reviews: 372", 22, 32)
+```
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+tbl.loc <- df %>% 
+  group_by(Company = rev.company, Location = rev.loc) %>%
+  summarize(Freq =n()) %>% 
+  mutate(Percent = round((Freq/sum(Freq)*100), digits=1)) %>% 
+  arrange(Company, -Percent) %>% 
+  top_n(n=5)
+
+kable(tbl.loc[1:15, 2:4], 
+      caption = "Top 5 Number of Reviews by Location") %>%
+  kable_styling(bootstrap_options = c("hover", "striped", "condensed"), font_size = 10, full_width = F) %>% 
+  column_spec(1, width = "5cm") %>% column_spec(2, width = "2cm") %>% column_spec(3, width = "2cm") %>% 
+  group_rows("Aristocrat", 1, 5) %>%
+  group_rows("IGT", 6, 10) %>%
+  group_rows("Scientific Games", 11, 15) %>% 
+  footnote(general = "Note: Top 5 based on percent ranking.", general_title = "")
+```
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+tbl.pos <- df %>% 
+  group_by(Company = rev.company, Position = rev.pos) %>%
+  summarize(Freq =n()) %>% 
+  mutate(Percent = round((Freq/sum(Freq)*100), digits=1)) %>% 
+  arrange(Company, -Percent) %>% 
+  top_n(n=5)
+
+kable(tbl.pos[1:15, 2:4], 
+      caption = "Top 5 Number of Reviews by Position Title") %>%
+  kable_styling(bootstrap_options = c("hover", "striped", "condensed"), font_size = 10, full_width = F) %>% 
+  column_spec(1, width = "5cm") %>% column_spec(2, width = "2cm") %>% column_spec(3, width = "2cm") %>% 
+  group_rows("Aristocrat", 1, 5) %>%
+  group_rows("IGT", 6, 10) %>%
+  group_rows("Scientific Games", 11, 15) %>% 
+  footnote(general = "Note: Top 5 based on percent ranking.", general_title = "")
+```
+
+=======
+
+**PART 2: STAR RATINGS SECTION**
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+ratingSum %>%
+  select("Company", "Culture", "Sr. Mgmt", "Work-Life Bal.", "Compensation", "Career Opp.", "Overall") %>% 
+  kable(caption = "Star Ratings", align = "c") %>%
+  kable_styling(c("striped", "hover", "condensed"), position = "center", font_size = 10, full_width = T) %>% 
+  column_spec(1, color = "black", bold = T) %>% column_spec(7, bold = T)
+```
+
+=======
+
+**PART 3: COMPANY REVIEWS SECTION**
+
+**Pros**  
+
+```{r 1unigram.prosplot, echo=FALSE, fig.height=5, fig.width=7, message=FALSE, warning=FALSE}
+unigram.prosplot
+```
+
+```{r, 2bigram.prosplot, echo=FALSE, fig.height=5, fig.width=7, message=FALSE, warning=FALSE}
+bigram.prosplot
+```
+
+```{r 3barcompare.pros, echo=FALSE, fig.height=5, fig.width=7, message=FALSE, warning=FALSE}
+barcompare.pros
+```
+
+**Cons**  
+
+```{r 4unigram.consplot, echo=FALSE, fig.height=5, fig.width=7, message=FALSE, warning=FALSE}
+unigram.consplot
+```
+
+```{r 5bigram.consplot, echo=FALSE, fig.height=5, fig.width=7, message=FALSE, warning=FALSE}
+bigram.consplot
+```
+
+```{r 6barcompare.cons, echo=FALSE, fig.height=5, fig.width=7, message=FALSE, warning=FALSE}
+barcompare.cons
+```
+
+**Sentiment Scoring of Pros & Cons**  
+
+```{r 7hist, echo=FALSE, message=FALSE, warning=FALSE}
+hist <- senscore.sentxt %>% 
+  group_by(Company = rev.company) %>% 
+  ggplot(aes(score)) +
+  geom_histogram(breaks=seq(-30, 20, by = 2), 
+                 col="#193652", 
+                 aes(fill=..count..)) +
+  scale_fill_gradient("Count", low="#254F73", high="#56B1F7") +
+  facet_wrap(~rev.company) + 
+  labs(title = "Distribution of Sentiment Scores", x = "Score", y = "Frequency") +
+  theme_bw(base_size = 10)
+hist
+```
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+kable(ss, 
+      caption = "Variability of Sentiment Scores") %>%
+  kable_styling(bootstrap_options = c("hover", "striped", "condensed"), 
+                font_size = 10, 
+                full_width = F) %>% 
+  column_spec(1, bold = T)
+```
+
+```{r 8senscore.sentxtplot, echo=FALSE, fig.height=12, fig.width=8, message=FALSE, warning=FALSE}
+senscore.sentxtplot
+```
+
+```{r 9senscore.sentxtplot.annual, echo=FALSE, fig.height=4, fig.width=6, message=FALSE, warning=FALSE}
+senscore.sentxtplot.annual
+```
+
