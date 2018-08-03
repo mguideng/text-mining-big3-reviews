@@ -7,10 +7,12 @@ totalreviews <- read_html(paste(baseurl, company, sort, sep="")) %>%
   sub(" reviews", "", .) %>% 
   sub(",", "", .) %>% 
   as.integer()
-maxresults <- trunc((totalreviews/10)+1)     #whole number, and +1 to capture all
+maxresults <- as.integer(ceiling(totalreviews/10))     #10 reviews per page, round up to whole number
 
 ## A. Create df by scraping: Date, Summary, Title, Pros, Cons, Helpful
 df.z <- map_df(1:maxresults, function(i) {
+  
+  Sys.sleep(2)    #be a polite bot
   
   cat("! ")     #progress indicator
   
