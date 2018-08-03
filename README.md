@@ -18,4 +18,5 @@ We'll use the "Big Three" as an example. That's **McKinsey & Co.**, **The Boston
 This repository contains the two files used to create this post:
 
 `2018-07-16-text-mining-glassdoor-big3.Rmd` Markdown to generate narrative, code, and output into a single document.   
+Note that user will have to define a filepath to his/her own computer for the R source file below.   
 `source scrape Big3.R` Source file used with the .Rmd file to scrape Glassdoor.
